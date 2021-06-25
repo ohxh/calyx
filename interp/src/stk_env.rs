@@ -9,28 +9,50 @@ use std::rc::Rc;
 
 //use push front and pop front and iterator is in right order then
 
-struct SmoosherIn<'a, K: Eq + std::hash::Hash + Clone, V: Clone> {
-    pub wr: &'a mut Smoosher<K, V>,
+struct SmoosherWr<'a, K: Eq + std::hash::Hash + Clone, V: Clone> {
+    wr: &'a mut HashMap<K, V>,
 }
 
-impl<'a, K: Eq + std::hash::Hash + Clone, V: Clone> SmoosherIn<'a, K, V> {
-    fn new(sm: Smoosher<K, V>) -> SmoosherIn<'a, K, V> {
-        SmoosherIn { wr: &mut sm }
+impl<'a, K: Eq + std::hash::Hash + Clone, V: Clone> SmoosherWr<'a, K, V> {
+    ///new will take in the top level hashmap from the Smoosher and form the
+    ///mutable writer, lifetime annotations needed due to K and V
+    fn new(hm: HashMap<K, V>) -> SmoosherWr<'a, K, V> {
+        SmoosherWr { wr: &mut hm }
+    }
+
+    //set/write + potentially get but would be harder to use
+    ///set takes in a key value pair and sets the binding of k to v in the
+    ///hashmap.
+    fn set(&mut self, k: K, v: V) {
+        self.wr.insert(k, v);
     }
 }
 
-struct SmoosherOut<K: Eq + std::hash::Hash + Clone, V: Clone> {
-    pub rd: Smoosher<K, V>,
+//get
+struct SmoosherRd<'a, K: Eq + std::hash::Hash + Clone, V: Clone> {
+    rd: Vec<&'a HashMap<K, V>>,
 }
 
-impl<K: Eq + std::hash::Hash + Clone, V: Clone> SmoosherOut<K, V> {
-    fn new(rd: Smoosher<K, V>) -> Self {
+impl<'a, K: Eq + std::hash::Hash + Clone, V: Clone> SmoosherRd<'a, K, V> {
+    ///new will recieve a vector of pointers to the hashmaps within the smoosher
+    fn new(rd: Vec<&'a HashMap<K, V>>) -> Self {
         Self { rd }
     }
+
+    fn get(&self, k: &K) -> Option<&V> {
+        for hm in self.rd {
+            match hm.get(k) {
+                Some(v) => return Some(v),
+                None => (),
+            }
+        }
+        None
+    }
 }
 
+//two imm access for handles + smoosh (since on stack layer) + fork + push_new
 struct Smoosher<K: Eq + std::hash::Hash + Clone, V: Clone> {
-    pub ds: VecDeque<Rc<RefCell<HashMap<K, V>>>>,
+    ds: VecDeque<Rc<RefCell<HashMap<K, V>>>>,
     //the above is so we can keep track of scope
     //the below is to make getting easy. not sure
     //if this is too clunky
@@ -40,6 +62,21 @@ struct Smoosher<K: Eq + std::hash::Hash + Clone, V: Clone> {
 //methods we will implement
 // new, get, set, clone, top, bottom, smoosh, diff
 impl<K: Eq + std::hash::Hash + Clone, V: Clone> Smoosher<K, V> {
+    fn read_access(&self) -> SmoosherRd<K, V> {
+        let coll = Vec::new();
+        for hm in self.ds.range(1..) {
+            coll.push(&*hm.borrow());
+        }
+        SmoosherRd::new(coll)
+    }
+
+    fn write_access(&self) -> SmoosherWr<K, V> {
+        match self.ds.front() {
+            Some(v) => SmoosherWr::new(*v.borrow()),
+            None => panic!(),
+        }
+    }
+
     fn new(k: K, v: V) -> Smoosher<K, V> {
         let hm: HashMap<K, V> = HashMap::new();
         let rc_rc_hm: Rc<RefCell<HashMap<K, V>>> = Rc::new(RefCell::new(hm));
