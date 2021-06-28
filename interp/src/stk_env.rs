@@ -2,9 +2,11 @@
 
 use super::{primitives, primitives::Primitive, values::Value};
 use calyx::ir;
+use std::borrow::BorrowMut;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::convert::TryInto;
+use std::ops::DerefMut;
 use std::rc::Rc;
 
 //use push front and pop front and iterator is in right order then
@@ -16,8 +18,8 @@ struct SmoosherWr<'a, K: Eq + std::hash::Hash + Clone, V: Clone> {
 impl<'a, K: Eq + std::hash::Hash + Clone, V: Clone> SmoosherWr<'a, K, V> {
     ///new will take in the top level hashmap from the Smoosher and form the
     ///mutable writer, lifetime annotations needed due to K and V
-    fn new(hm: HashMap<K, V>) -> SmoosherWr<'a, K, V> {
-        SmoosherWr { wr: &mut hm }
+    fn new(hm: &'a mut HashMap<K, V>) -> SmoosherWr<'a, K, V> {
+        SmoosherWr { wr: hm }
     }
 
     //set/write + potentially get but would be harder to use
@@ -40,7 +42,7 @@ impl<'a, K: Eq + std::hash::Hash + Clone, V: Clone> SmoosherRd<'a, K, V> {
     }
 
     fn get(&self, k: &K) -> Option<&V> {
-        for hm in self.rd {
+        for hm in &self.rd {
             match hm.get(k) {
                 Some(v) => return Some(v),
                 None => (),
@@ -63,17 +65,34 @@ struct Smoosher<K: Eq + std::hash::Hash + Clone, V: Clone> {
 // new, get, set, clone, top, bottom, smoosh, diff
 impl<K: Eq + std::hash::Hash + Clone, V: Clone> Smoosher<K, V> {
     fn read_access(&self) -> SmoosherRd<K, V> {
-        let coll = Vec::new();
+        let mut coll = Vec::new();
+        let mut cl: &mut Vec<&HashMap<K, V>> = Vec::borrow_mut(&mut coll);
         for hm in self.ds.range(1..) {
-            coll.push(&*hm.borrow());
+            cl.push(&hm.borrow());
         }
-        SmoosherRd::new(coll)
+        SmoosherRd::new(cl)
     }
 
     fn write_access(&self) -> SmoosherWr<K, V> {
         match self.ds.front() {
-            Some(v) => SmoosherWr::new(*v.borrow()),
+            Some(v) => SmoosherWr::new(v.borrow().borrow_mut()),
             None => panic!(),
+        }
+    }
+
+    fn push_new(&self) {
+        self.ds.push_front(Rc::new(RefCell::new(HashMap::new())));
+    }
+
+    ///Creates a new smoosher where the top of the previous one becomes the
+    ///first element of the new smoosher
+    fn fork(&self) -> Smoosher<K, V> {
+        let start = *self.ds.front().unwrap();
+        let mut dq = VecDeque::new();
+        dq.push_back(start);
+        Smoosher {
+            ds: dq,
+            hm: HashMap::new(),
         }
     }
 
@@ -110,23 +129,20 @@ impl<K: Eq + std::hash::Hash + Clone, V: Clone> Smoosher<K, V> {
     ///set(k, v) mutates the current Smoosher, inserting the key-value pair (k, v) to the topmost HashMap of
     ///the Smoosher. Overwrites the existing (k, v') pair if one exists in the topmost HashMap at the time
     ///of the set(k, v) call.
-    fn set(&mut self, k: K, v: V) {
-        //note vecdeque can never be empty b/c initialized w/ a new hashmap
-        if let Some(front) = self.ds.front() {
-            let front_ref = &mut front.borrow_mut();
-            front_ref.insert(k, v);
-        }
-        //should also mutate the other HM
-        self.hm.insert(k, v);
-    }
+    // fn set(&mut self, k: K, v: V) {
+    //     //note vecdeque can never be empty b/c initialized w/ a new hashmap
+    //     if let Some(front) = self.ds.front() {
+    //         let front_ref = &mut front.borrow_mut();
+    //         front_ref.insert(k, v);
+    //     }
+    //     //should also mutate the other HM
+    //     self.hm.insert(k, v);
+    // }
 
     //note: if we change everything here to deal with Rc<RefCell...>, then clone
     //is simple we just new_scope and fork
 
     ///Returns a copy of the stk_env with a clean HashMap ontop (at front of internal VecDeque)
-    fn fork(&self) -> Self {
-        todo!()
-    }
 
     ///Add a clean HashMap ontop of internal VecDeque
     fn new_scope(&mut self) {
